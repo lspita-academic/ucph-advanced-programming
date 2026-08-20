@@ -20,6 +20,6 @@ pkgs.stdenv.mkDerivation {
     # haskell
     haskell.compiler.ghc912
     cabal-install
-    # (haskell-language-server.override { supportedGhcVersions = [ “91” ]; })
+    (haskell-language-server.override { supportedGhcVersions = [ "912" ]; })
   ];
 }
