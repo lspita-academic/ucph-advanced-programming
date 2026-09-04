@@ -1,5 +1,7 @@
 module APL.Eval
   ( Val (..),
+    EvalError (..),
+    EvalResult,
     eval,
   )
 where
@@ -12,7 +14,15 @@ data Val
   = ValInt Integer
   deriving (Eq, Show)
 
-type EvalError = String
+data EvalError
+  = DivisionByZero
+  | NegativeExponent
+  deriving (Eq)
+
+instance Show EvalError where
+    show e = case e of
+        DivisionByZero -> "Cannot divide by 0"
+        NegativeExponent -> "Cannot use a negative exponent"
 
 type EvalResult = Either Val EvalError
 
@@ -53,7 +63,7 @@ eval (Div e1 e2) =
     ( tryCombine
         ( Just
             ( \x y -> case (x, y) of
-                (ValInt _, ValInt y') -> if y' == 0 then Just "Cannot divide by 0" else Nothing
+                (ValInt _, ValInt y') -> if y' == 0 then Just DivisionByZero else Nothing
             )
         )
         ( \x y -> case (x, y) of
@@ -67,7 +77,7 @@ eval (Pow e1 e2) =
     ( tryCombine
         ( Just
             ( \x y -> case (x, y) of
-                (ValInt _, ValInt y') -> if y' < 0 then Just "Cannot have a negative exponent" else Nothing
+                (ValInt _, ValInt y') -> if y' < 0 then Just NegativeExponent else Nothing
             )
         )
         ( \x y -> case (x, y) of
@@ -78,9 +88,15 @@ eval (Pow e1 e2) =
     e2
 
 tryCombine :: Maybe (Val -> Val -> Maybe EvalError) -> (Val -> Val -> Val) -> Val -> Val -> EvalResult
-tryCombine errorPredicate mapFn x y = case errorPredicate & fmap (\f -> f x y) & join of
-  Just e -> Right e
-  Nothing -> Left (mapFn x y)
+tryCombine errorPredicate mapFn x y =
+    let
+        -- join flattens out the `Maybe (Maybe EvalError)` into a `Maybe EvalError`
+        -- https://hackage-content.haskell.org/package/base-4.22.0.0/docs/Control-Monad.html#v:join
+        maybeError = errorPredicate & fmap (\f -> f x y) & join
+    in
+    case maybeError of
+    Just e -> Right e
+    Nothing -> Left (mapFn x y)
 
 binaryEval :: (Val -> Val -> EvalResult) -> Exp -> Exp -> EvalResult
 binaryEval mapFn x y = case (eval x, eval y) of
