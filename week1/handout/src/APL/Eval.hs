@@ -46,7 +46,7 @@ envExtend :: VName -> Val -> Env -> Env
 envExtend key val env = (key, val) : env
 
 envLookup :: VName -> Env -> Maybe Val
-envLookup key env = lookup key env
+envLookup = lookup
 
 eval :: Env -> Exp -> EvalResult
 eval _ (CstInt n) = Left $ ValInt n
