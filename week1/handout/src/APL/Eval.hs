@@ -6,100 +6,128 @@ module APL.Eval
   )
 where
 
-import APL.AST (Exp (Add, CstInt, Div, Mul, Pow, Sub))
+import APL.AST (Exp (Add, CstBool, CstInt, Div, Eql, If, Mul, Pow, Sub))
 import Data.Function ((&))
 import GHC.Base (join)
 
 data Val
   = ValInt Integer
+  | ValBool Bool
   deriving (Eq, Show)
 
 data EvalError
   = DivisionByZero
   | NegativeExponent
+  | NonBooleanCondition
+  | InvalidOperandsType
   deriving (Eq)
 
 instance Show EvalError where
-    show e = case e of
-        DivisionByZero -> "Cannot divide by 0"
-        NegativeExponent -> "Cannot use a negative exponent"
+  show e = case e of
+    DivisionByZero -> "Cannot divide by 0"
+    NegativeExponent -> "Cannot use a negative exponent"
+    NonBooleanCondition -> "Condition is not a boolean"
+    InvalidOperandsType -> "Operands are not of a compatible type"
 
 type EvalResult = Either Val EvalError
 
 eval :: Exp -> EvalResult
-eval (CstInt n) = Left (ValInt n)
+eval (CstInt n) = Left $ ValInt n
+eval (CstBool b) = Left $ ValBool b
 eval (Add e1 e2) =
-  binaryEval
-    ( tryCombine
-        Nothing
-        ( \x y -> case (x, y) of
-            (ValInt x', ValInt y') -> ValInt (x' + y')
-        )
+  mapBinaryEval
+    ( \x y -> case (x, y) of
+        (ValInt x', ValInt y') -> intBinaryOp (+) x' y'
+        _ -> Right InvalidOperandsType
     )
     e1
     e2
 eval (Sub e1 e2) =
-  binaryEval
-    ( tryCombine
-        Nothing
-        ( \x y -> case (x, y) of
-            (ValInt x', ValInt y') -> ValInt (x' - y')
-        )
+  mapBinaryEval
+    ( \x y -> case (x, y) of
+        (ValInt x', ValInt y') -> intBinaryOp (-) x' y'
+        _ -> Right InvalidOperandsType
     )
     e1
     e2
 eval (Mul e1 e2) =
-  binaryEval
-    ( tryCombine
-        Nothing
-        ( \x y -> case (x, y) of
-            (ValInt x', ValInt y') -> ValInt (x' * y')
-        )
+  mapBinaryEval
+    ( \x y -> case (x, y) of
+        (ValInt x', ValInt y') -> intBinaryOp (*) x' y'
+        _ -> Right InvalidOperandsType
     )
     e1
     e2
 eval (Div e1 e2) =
-  binaryEval
-    ( tryCombine
-        ( Just
-            ( \x y -> case (x, y) of
-                (ValInt _, ValInt y') -> if y' == 0 then Just DivisionByZero else Nothing
+  mapBinaryEval
+    ( \x y -> case (x, y) of
+        (ValInt x', ValInt y') ->
+          tryBinaryOp
+            ValInt
+            ( Just $ \_ _ ->
+                if y' == 0
+                  then Just DivisionByZero
+                  else Nothing
             )
-        )
-        ( \x y -> case (x, y) of
-            (ValInt x', ValInt y') -> ValInt (x' `div` y')
-        )
+            div
+            x'
+            y'
+        _ -> Right InvalidOperandsType
     )
     e1
     e2
 eval (Pow e1 e2) =
-  binaryEval
-    ( tryCombine
-        ( Just
-            ( \x y -> case (x, y) of
-                (ValInt _, ValInt y') -> if y' < 0 then Just NegativeExponent else Nothing
+  mapBinaryEval
+    ( \x y -> case (x, y) of
+        (ValInt x', ValInt y') ->
+          tryBinaryOp
+            ValInt
+            ( Just $ \_ _ ->
+                if y' < 0
+                  then Just NegativeExponent
+                  else Nothing
             )
-        )
-        ( \x y -> case (x, y) of
-            (ValInt x', ValInt y') -> ValInt (x' ^ y')
-        )
+            (^)
+            x'
+            y'
+        _ -> Right InvalidOperandsType
     )
     e1
     e2
+eval (Eql e1 e2) =
+  mapBinaryEval
+    -- by deriving eq and comparing the Val types instead of the internal primitives,
+    -- we automatically get an inequality for comparing different val types
+    (\x y -> Left $ ValBool (x == y))
+    e1
+    e2
+eval (If cond e1 e2) =
+  mapEval
+    ( \cond' -> case cond' of
+        ValBool b -> eval (if b then e1 else e2)
+        _ -> Right NonBooleanCondition
+    )
+    cond
 
-tryCombine :: Maybe (Val -> Val -> Maybe EvalError) -> (Val -> Val -> Val) -> Val -> Val -> EvalResult
-tryCombine errorPredicate mapFn x y =
-    let
-        -- join flattens out the `Maybe (Maybe EvalError)` into a `Maybe EvalError`
-        -- https://hackage-content.haskell.org/package/base-4.22.0.0/docs/Control-Monad.html#v:join
-        maybeError = errorPredicate & fmap (\f -> f x y) & join
-    in
-    case maybeError of
-    Just e -> Right e
-    Nothing -> Left (mapFn x y)
+tryBinaryOp :: (t3 -> Val) -> Maybe (t1 -> t2 -> Maybe EvalError) -> (t1 -> t2 -> t3) -> t1 -> t2 -> EvalResult
+tryBinaryOp wrapFn errorPredicate op x y =
+  let -- join flattens out the `Maybe (Maybe EvalError)` into a `Maybe EvalError`
+      -- https://hackage-content.haskell.org/package/base-4.22.0.0/docs/Control-Monad.html#v:join
+      maybeError = errorPredicate & fmap (\f -> f x y) & join
+   in case maybeError of
+        Just e -> Right e
+        Nothing -> Left (wrapFn $ op x y)
 
-binaryEval :: (Val -> Val -> EvalResult) -> Exp -> Exp -> EvalResult
-binaryEval mapFn x y = case (eval x, eval y) of
-  (e@(Right _), _) -> e
-  (_, e@(Right _)) -> e
-  (Left x', Left y') -> mapFn x' y'
+intBinaryOp :: (Integer -> Integer -> Integer) -> Integer -> Integer -> EvalResult
+intBinaryOp = tryBinaryOp ValInt Nothing
+
+mapEval :: (Val -> EvalResult) -> Exp -> EvalResult
+mapEval mapFn e = case eval e of
+  err@(Right _) -> err
+  Left e' -> mapFn e'
+
+mapBinaryEval :: (Val -> Val -> EvalResult) -> Exp -> Exp -> EvalResult
+mapBinaryEval mapFn e1 e2 = case (eval e1, eval e2) of
+  (err@(Right _), _) -> err
+  (_, err@(Right _)) -> err
+  (Left e1', Left e2') -> mapFn e1' e2'
