@@ -3,10 +3,12 @@ module APL.Eval
     EvalError (..),
     EvalResult,
     eval,
+    envEmpty,
+    envExtend,
   )
 where
 
-import APL.AST (Exp (Add, CstBool, CstInt, Div, Eql, If, Mul, Pow, Sub))
+import APL.AST (Exp (Add, CstBool, CstInt, Div, Eql, If, Let, Mul, Pow, Sub, Var), VName)
 import Data.Function ((&))
 import GHC.Base (join)
 
@@ -20,6 +22,7 @@ data EvalError
   | NegativeExponent
   | NonBooleanCondition
   | InvalidOperandsType
+  | UndefinedReference VName
   deriving (Eq)
 
 instance Show EvalError where
@@ -28,37 +31,54 @@ instance Show EvalError where
     NegativeExponent -> "Cannot use a negative exponent"
     NonBooleanCondition -> "Condition is not a boolean"
     InvalidOperandsType -> "Operands are not of a compatible type"
+    UndefinedReference key -> "Undefined reference: " ++ key
 
 type EvalResult = Either Val EvalError
 
-eval :: Exp -> EvalResult
-eval (CstInt n) = Left $ ValInt n
-eval (CstBool b) = Left $ ValBool b
-eval (Add e1 e2) =
+type Env = [(VName, Val)]
+
+envEmpty :: Env
+envEmpty = []
+
+envExtend :: VName -> Val -> Env -> Env
+-- put the value in front for faster searches (time locality) and to override the
+-- previous value because of linear lookup from the start
+envExtend key val env = (key, val) : env
+
+envLookup :: VName -> Env -> Maybe Val
+envLookup key env = lookup key env
+
+eval :: Env -> Exp -> EvalResult
+eval _ (CstInt n) = Left $ ValInt n
+eval _ (CstBool b) = Left $ ValBool b
+eval env (Add e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
         (ValInt x', ValInt y') -> safeIntBinaryOp (+) x' y'
         _ -> Right InvalidOperandsType
     )
+    env
     e1
     e2
-eval (Sub e1 e2) =
+eval env (Sub e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
         (ValInt x', ValInt y') -> safeIntBinaryOp (-) x' y'
         _ -> Right InvalidOperandsType
     )
+    env
     e1
     e2
-eval (Mul e1 e2) =
+eval env (Mul e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
         (ValInt x', ValInt y') -> safeIntBinaryOp (*) x' y'
         _ -> Right InvalidOperandsType
     )
+    env
     e1
     e2
-eval (Div e1 e2) =
+eval env (Div e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
         (ValInt x', ValInt y') ->
@@ -73,9 +93,10 @@ eval (Div e1 e2) =
             y'
         _ -> Right InvalidOperandsType
     )
+    env
     e1
     e2
-eval (Pow e1 e2) =
+eval env (Pow e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
         (ValInt x', ValInt y') ->
@@ -90,25 +111,30 @@ eval (Pow e1 e2) =
             y'
         _ -> Right InvalidOperandsType
     )
+    env
     e1
     e2
-eval (Eql e1 e2) =
+eval env (Eql e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
         (ValInt x', ValInt y') -> safeBoolBinaryOp (==) x' y'
         (ValBool x', ValBool y') -> safeBoolBinaryOp (==) x' y'
         _ -> Right InvalidOperandsType
     )
+    env
     e1
     e2
-eval (If cond e1 e2) =
+eval env (If cond e1 e2) =
   mapEval
     ( \cond' -> case cond' of
-        ValBool True -> eval e1
-        ValBool False -> eval e2
+        ValBool True -> eval env e1
+        ValBool False -> eval env e2
         _ -> Right NonBooleanCondition
     )
+    env
     cond
+eval env (Var key) = envLookup key env & maybe (Right $ UndefinedReference key) Left
+eval env (Let key e body) = mapEval (\val -> eval (envExtend key val env) body) env e
 
 tryBinaryOp :: (t3 -> Val) -> Maybe (t1 -> t2 -> Maybe EvalError) -> (t1 -> t2 -> t3) -> t1 -> t2 -> EvalResult
 tryBinaryOp wrapFn errorPredicate op x y =
@@ -128,13 +154,13 @@ safeIntBinaryOp = tryBinaryOp ValInt Nothing
 safeBoolBinaryOp :: (t1 -> t2 -> Bool) -> t1 -> t2 -> EvalResult
 safeBoolBinaryOp = tryBinaryOp ValBool Nothing
 
-mapEval :: (Val -> EvalResult) -> Exp -> EvalResult
-mapEval mapFn e = case eval e of
+mapEval :: (Val -> EvalResult) -> Env -> Exp -> EvalResult
+mapEval mapFn env e = case eval env e of
   err@(Right _) -> err
   Left e' -> mapFn e'
 
-mapBinaryEval :: (Val -> Val -> EvalResult) -> Exp -> Exp -> EvalResult
-mapBinaryEval mapFn e1 e2 = case (eval e1, eval e2) of
+mapBinaryEval :: (Val -> Val -> EvalResult) -> Env -> Exp -> Exp -> EvalResult
+mapBinaryEval mapFn env e1 e2 = case (eval env e1, eval env e2) of
   (err@(Right _), _) -> err
   (_, err@(Right _)) -> err
   (Left e1', Left e2') -> mapFn e1' e2'
