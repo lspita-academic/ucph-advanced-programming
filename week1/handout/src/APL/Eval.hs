@@ -96,15 +96,18 @@ eval (Pow e1 e2) =
     e2
 eval (Eql e1 e2) =
   mapBinaryEval
-    -- by deriving eq and comparing the Val types instead of the internal primitives,
-    -- we automatically get an inequality for comparing different val types
-    (\x y -> Left $ ValBool (x == y))
+    (\x y -> case (x, y) of
+        (ValInt x', ValInt y') -> boolBinaryOp (==) x' y'
+        (ValBool x', ValBool y') -> boolBinaryOp (==) x' y'
+        _ -> Right InvalidOperandsType
+    )
     e1
     e2
 eval (If cond e1 e2) =
   mapEval
     ( \cond' -> case cond' of
-        ValBool b -> eval (if b then e1 else e2)
+        ValBool True -> eval e1
+        ValBool False -> eval e2
         _ -> Right NonBooleanCondition
     )
     cond
@@ -118,8 +121,11 @@ tryBinaryOp wrapFn errorPredicate op x y =
         Just e -> Right e
         Nothing -> Left (wrapFn $ op x y)
 
-intBinaryOp :: (Integer -> Integer -> Integer) -> Integer -> Integer -> EvalResult
+intBinaryOp :: (t1 -> t2 -> Integer) -> t1 -> t2 -> EvalResult
 intBinaryOp = tryBinaryOp ValInt Nothing
+
+boolBinaryOp :: (t1 -> t2 -> Bool) -> t1 -> t2 -> EvalResult
+boolBinaryOp = tryBinaryOp ValBool Nothing
 
 mapEval :: (Val -> EvalResult) -> Exp -> EvalResult
 mapEval mapFn e = case eval e of
