@@ -1,7 +1,7 @@
 module APL.Eval_Tests (tests) where
 
-import APL.AST (Exp (Add, CstInt, Div, Mul, Pow, Sub))
-import APL.Eval (EvalError (DivisionByZero, NegativeExponent), Val (ValInt), eval)
+import APL.AST (Exp (Add, CstInt, Div, Mul, Pow, Sub, CstBool))
+import APL.Eval (EvalError (DivisionByZero, NegativeExponent), Val (ValInt, ValBool), eval)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase)
 
@@ -13,7 +13,9 @@ tests =
         "Constants evaluation"
         [ testCase "Evaluate constant ints" $ assertBool "should evaluate to int" $ Left (ValInt 2) == eval (CstInt 2),
           testCase "Evaluate negative constant ints" $ assertBool "should evaluate to negative int" $ Left (ValInt (-2)) == eval (CstInt (-2)),
-          testCase "Evaluate different constant ints" $ assertBool "should not be equal values" $ eval (CstInt 2) /= eval (CstInt 3)
+          testCase "Evaluate different constant ints" $ assertBool "should not be equal values" $ eval (CstInt 2) /= eval (CstInt 3),
+          testCase "Evaluate constant booleans" $ assertBool "should evaluate to boolean" $ Left (ValBool True) == eval (CstBool True),
+          testCase "Evaluate different constant booleans" $ assertBool "should not be equal values" $ eval (CstBool True) /= eval (CstBool False)
         ],
       testGroup
         "Binary operations"
@@ -25,6 +27,11 @@ tests =
         ],
       testGroup
         "Binary operations failure"
+        [ testCase "Division by 0" $ assertBool "should return a division by 0 error" $ Right DivisionByZero == eval (CstInt 2 `Div` CstInt 0),
+          testCase "Negative exponent" $ assertBool "should return a negative exponent error " $ Right NegativeExponent == eval (CstInt 2 `Pow` CstInt (-3))
+        ],
+      testGroup
+        "Conditionals operations failure"
         [ testCase "Division by 0" $ assertBool "should return a division by 0 error" $ Right DivisionByZero == eval (CstInt 2 `Div` CstInt 0),
           testCase "Negative exponent" $ assertBool "should return a negative exponent error " $ Right NegativeExponent == eval (CstInt 2 `Pow` CstInt (-3))
         ]
