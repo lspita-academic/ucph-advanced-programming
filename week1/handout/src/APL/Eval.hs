@@ -37,7 +37,7 @@ eval (CstBool b) = Left $ ValBool b
 eval (Add e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
-        (ValInt x', ValInt y') -> intBinaryOp (+) x' y'
+        (ValInt x', ValInt y') -> safeIntBinaryOp (+) x' y'
         _ -> Right InvalidOperandsType
     )
     e1
@@ -45,7 +45,7 @@ eval (Add e1 e2) =
 eval (Sub e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
-        (ValInt x', ValInt y') -> intBinaryOp (-) x' y'
+        (ValInt x', ValInt y') -> safeIntBinaryOp (-) x' y'
         _ -> Right InvalidOperandsType
     )
     e1
@@ -53,7 +53,7 @@ eval (Sub e1 e2) =
 eval (Mul e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
-        (ValInt x', ValInt y') -> intBinaryOp (*) x' y'
+        (ValInt x', ValInt y') -> safeIntBinaryOp (*) x' y'
         _ -> Right InvalidOperandsType
     )
     e1
@@ -62,9 +62,8 @@ eval (Div e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
         (ValInt x', ValInt y') ->
-          tryBinaryOp
-            ValInt
-            ( Just $ \_ _ ->
+          intBinaryOp
+            ( \_ _ ->
                 if y' == 0
                   then Just DivisionByZero
                   else Nothing
@@ -80,9 +79,8 @@ eval (Pow e1 e2) =
   mapBinaryEval
     ( \x y -> case (x, y) of
         (ValInt x', ValInt y') ->
-          tryBinaryOp
-            ValInt
-            ( Just $ \_ _ ->
+          intBinaryOp
+            ( \_ _ ->
                 if y' < 0
                   then Just NegativeExponent
                   else Nothing
@@ -96,9 +94,9 @@ eval (Pow e1 e2) =
     e2
 eval (Eql e1 e2) =
   mapBinaryEval
-    (\x y -> case (x, y) of
-        (ValInt x', ValInt y') -> boolBinaryOp (==) x' y'
-        (ValBool x', ValBool y') -> boolBinaryOp (==) x' y'
+    ( \x y -> case (x, y) of
+        (ValInt x', ValInt y') -> safeBoolBinaryOp (==) x' y'
+        (ValBool x', ValBool y') -> safeBoolBinaryOp (==) x' y'
         _ -> Right InvalidOperandsType
     )
     e1
@@ -121,11 +119,14 @@ tryBinaryOp wrapFn errorPredicate op x y =
         Just e -> Right e
         Nothing -> Left (wrapFn $ op x y)
 
-intBinaryOp :: (t1 -> t2 -> Integer) -> t1 -> t2 -> EvalResult
-intBinaryOp = tryBinaryOp ValInt Nothing
+intBinaryOp :: (t1 -> t2 -> Maybe EvalError) -> (t1 -> t2 -> Integer) -> t1 -> t2 -> EvalResult
+intBinaryOp errFn = tryBinaryOp ValInt (Just errFn)
 
-boolBinaryOp :: (t1 -> t2 -> Bool) -> t1 -> t2 -> EvalResult
-boolBinaryOp = tryBinaryOp ValBool Nothing
+safeIntBinaryOp :: (t1 -> t2 -> Integer) -> t1 -> t2 -> EvalResult
+safeIntBinaryOp = tryBinaryOp ValInt Nothing
+
+safeBoolBinaryOp :: (t1 -> t2 -> Bool) -> t1 -> t2 -> EvalResult
+safeBoolBinaryOp = tryBinaryOp ValBool Nothing
 
 mapEval :: (Val -> EvalResult) -> Exp -> EvalResult
 mapEval mapFn e = case eval e of
