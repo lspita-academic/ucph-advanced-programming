@@ -57,6 +57,11 @@ runEval (EvalM x) = x
 failure :: String -> EvalM a
 failure e = EvalM $ Left e
 
+catch :: EvalM a -> EvalM a -> EvalM a
+catch (EvalM m1) (EvalM m2) = EvalM $ case m1 of
+  Left _ -> m2
+  Right _ -> m1
+
 evalIntBinOp :: (Integer -> Integer -> EvalM Integer) -> Env -> Exp -> Exp -> EvalM Val
 evalIntBinOp f env e1 e2 = do
   x1 <- eval env e1
@@ -121,9 +126,7 @@ eval env (Apply fexp arg) = do
       let newEnv = envExtend vname arg' fenv
        in eval newEnv body
     _ -> failure "Cannot apply non-functional expression"
-eval env (TryCatch body catchBody) = case (eval env body, eval env catchBody) of
-  (EvalM (Left _), catchVal) -> catchVal
-  (val@(EvalM (Right _)), _) -> val
+eval env (TryCatch body catchBody) = eval env body `catch` eval env catchBody
 
 evalFor :: Env -> VName -> VName -> Val -> Integer -> Integer -> Exp -> EvalM Val
 evalFor env p i pval ival bound body
