@@ -10,7 +10,6 @@ where
 
 import APL.AST (Exp (..), VName)
 import Control.Monad (ap, liftM)
-import Data.Function ((&))
 
 data Val
   = ValInt Integer
@@ -31,8 +30,7 @@ envLookup v env = lookup v env
 
 type Error = String
 
-newtype EvalM a = EvalM (Either Error a)
-  deriving (Show, Eq)
+newtype EvalM a = EvalM (Env -> Either Error a)
 
 instance Functor EvalM where
   -- fmap _ (EvalM (Left e)) = EvalM $ Left e
@@ -40,7 +38,7 @@ instance Functor EvalM where
   fmap = liftM
 
 instance Applicative EvalM where
-  pure a = EvalM $ Right a
+  pure a = EvalM $ const $ Right a
 
   -- EvalM (Left e) <*> _ = EvalM $ Left e
   -- _ <*> EvalM (Left e) = EvalM $ Left e
@@ -48,91 +46,105 @@ instance Applicative EvalM where
   (<*>) = ap
 
 instance Monad EvalM where
-  EvalM (Left e) >>= _ = EvalM $ Left e
-  EvalM (Right a) >>= f = f a
+  EvalM f >>= fnext = EvalM $ \e -> case f e of
+    Left err -> Left err
+    Right a ->
+      let EvalM f' = fnext a
+       in f' e
 
-runEval :: EvalM a -> Either Error a
-runEval (EvalM x) = x
+runEval :: EvalM a -> Env -> Either Error a
+runEval (EvalM f) env = f env
 
 failure :: String -> EvalM a
-failure e = EvalM $ Left e
+failure e = EvalM $ \_ -> Left e
+
+askEnv :: EvalM Env
+askEnv = EvalM $ \env -> Right env
+
+localEnv :: (Env -> Env) -> EvalM a -> EvalM a
+localEnv f (EvalM m) = EvalM $ \env -> m (f env)
 
 catch :: EvalM a -> EvalM a -> EvalM a
-catch (EvalM m1) (EvalM m2) = EvalM $ case m1 of
-  Left _ -> m2
-  Right _ -> m1
+catch (EvalM m1) (EvalM m2) = EvalM $ \env ->
+  let res = m1 env
+   in case res of
+        Left _ -> m2 env
+        Right _ -> res
 
-evalIntBinOp :: (Integer -> Integer -> EvalM Integer) -> Env -> Exp -> Exp -> EvalM Val
-evalIntBinOp f env e1 e2 = do
-  x1 <- eval env e1
-  x2 <- eval env e2
+evalIntBinOp :: (Integer -> Integer -> EvalM Integer) -> Exp -> Exp -> EvalM Val
+evalIntBinOp f e1 e2 = do
+  x1 <- eval e1
+  x2 <- eval e2
   case (x1, x2) of
     (ValInt x1', ValInt x2') -> ValInt <$> f x1' x2'
     _ -> failure "Non-integer operand"
 
-evalIntBinOp' :: (Integer -> Integer -> Integer) -> Env -> Exp -> Exp -> EvalM Val
-evalIntBinOp' f env e1 e2 =
-  evalIntBinOp f' env e1 e2
+evalIntBinOp' :: (Integer -> Integer -> Integer) -> Exp -> Exp -> EvalM Val
+evalIntBinOp' f e1 e2 =
+  evalIntBinOp f' e1 e2
   where
     f' x y = pure $ f x y
 
-eval :: Env -> Exp -> EvalM Val
-eval _ (CstInt x) = pure $ ValInt x
-eval _ (CstBool b) = pure $ ValBool b
-eval env (Var v) = do
+eval :: Exp -> EvalM Val
+eval (CstInt x) = pure $ ValInt x
+eval (CstBool b) = pure $ ValBool b
+eval (Var v) = do
+  env <- askEnv
   case envLookup v env of
     Just x -> pure x
     Nothing -> failure $ "Unknown variable: " ++ v
-eval env (Add e1 e2) = evalIntBinOp' (+) env e1 e2
-eval env (Sub e1 e2) = evalIntBinOp' (-) env e1 e2
-eval env (Mul e1 e2) = evalIntBinOp' (*) env e1 e2
-eval env (Div e1 e2) = evalIntBinOp checkedDiv env e1 e2
+eval (Add e1 e2) = evalIntBinOp' (+) e1 e2
+eval (Sub e1 e2) = evalIntBinOp' (-) e1 e2
+eval (Mul e1 e2) = evalIntBinOp' (*) e1 e2
+eval (Div e1 e2) = evalIntBinOp checkedDiv e1 e2
   where
     checkedDiv _ 0 = failure "Division by zero"
     checkedDiv x y = pure $ x `div` y
-eval env (Pow e1 e2) = evalIntBinOp checkedPow env e1 e2
+eval (Pow e1 e2) = evalIntBinOp checkedPow e1 e2
   where
     checkedPow x y
       | y < 0 = failure "Negative exponent"
       | otherwise = pure $ x ^ y
-eval env (Eql e1 e2) = do
-  x1 <- eval env e1
-  x2 <- eval env e2
+eval (Eql e1 e2) = do
+  x1 <- eval e1
+  x2 <- eval e2
   case (x1, x2) of
     (ValInt x1', ValInt x2') -> pure $ ValBool $ x1' == x2'
     (ValBool x1', ValBool x2') -> pure $ ValBool $ x1' == x2'
     _ -> failure "Invalid operands to equality"
-eval env (If cond e1 e2) = do
-  result <- eval env cond
+eval (If cond e1 e2) = do
+  result <- eval cond
   case result of
-    ValBool b -> eval env (if b then e1 else e2)
+    ValBool b -> eval (if b then e1 else e2)
     _ -> failure "Non-boolean conditional."
-eval env (Let var e1 e2) = do
-  x1 <- eval env e1
-  let newEnv = envExtend var x1 env
-   in eval newEnv e2
-eval env (ForLoop (p, initial) (i, bound) body) = do
-  initial' <- eval env initial
-  bound' <- eval env bound
+eval (Let var e1 e2) = do
+  x1 <- eval e1
+  localEnv (envExtend var x1) (eval e2)
+eval (ForLoop (p, initial) (i, bound) body) = do
+  initial' <- eval initial
+  bound' <- eval bound
   case bound' of
-    ValInt boundInt -> evalFor env p i initial' 0 boundInt body
+    ValInt boundInt -> evalFor p i initial' 0 boundInt body
     _ -> failure "Non-integral loop bound"
-eval env (Lambda vname body) = pure $ ValFun env vname body
-eval env (Apply fexp arg) = do
-  fexp' <- eval env fexp
-  arg' <- eval env arg
+eval (Lambda vname body) = do
+  env <- askEnv
+  pure $ ValFun env vname body
+eval (Apply fexp arg) = do
+  fexp' <- eval fexp
+  arg' <- eval arg
   case fexp' of
     ValFun fenv vname body ->
-      let newEnv = envExtend vname arg' fenv
-       in eval newEnv body
+      localEnv (\_ -> envExtend vname arg' fenv) (eval body)
     _ -> failure "Cannot apply non-functional expression"
-eval env (TryCatch body catchBody) = eval env body `catch` eval env catchBody
+eval (TryCatch body catchBody) = eval body `catch` eval catchBody
 
-evalFor :: Env -> VName -> VName -> Val -> Integer -> Integer -> Exp -> EvalM Val
-evalFor env p i pval ival bound body
+evalFor :: VName -> VName -> Val -> Integer -> Integer -> Exp -> EvalM Val
+evalFor p i pval ival bound body
   | bound == ival = pure pval
-  | otherwise = do
-      bval <- eval newEnv body
-      evalFor newEnv p i bval (ival + 1) bound body
-  where
-    newEnv = env & envExtend p pval & envExtend i (ValInt ival)
+  | otherwise =
+      localEnv
+        (envExtend p pval . envExtend i (ValInt ival))
+        ( do
+            bval <- eval body
+            evalFor p i bval (ival + 1) bound body
+        )
