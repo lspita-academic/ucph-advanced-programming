@@ -1,13 +1,16 @@
 module SPC_Tests (tests) where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forM_)
+import Control.Monad (forM_, forever)
 import SPC
 import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
 emptyJob :: Job
 emptyJob = Job {jobAction = pure (), jobMaxSeconds = 0}
+
+emptyLoopJob :: Int -> Job
+emptyLoopJob s = Job {jobAction = forever $ pure (), jobMaxSeconds = s}
 
 tests :: TestTree
 tests =

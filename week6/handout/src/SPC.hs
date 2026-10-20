@@ -10,6 +10,7 @@ module SPC
     JobDoneReason (..),
     jobStatus,
     jobCancel,
+    jobWait,
   )
 where
 
@@ -51,10 +52,7 @@ data SPCMsg
   | MsgJobAdd Job (ReplyChan JobId)
   | MsgJobStatus JobId (ReplyChan (Maybe JobStatus))
   | MsgJobCancel JobId
-
-type JobHandle = (JobId, Job)
-
-type JobDoneHandle = (JobId, JobDoneReason)
+  | MsgJobWait JobId (ReplyChan (Maybe JobDoneReason))
 
 -- | A job that is to be enqueued in the glorious SPC.
 data Job = Job
@@ -95,11 +93,18 @@ data JobStatus
     JobPending
   deriving (Eq, Ord, Show)
 
+type JobHandle = (JobId, Job)
+
+type JobDoneHandle = (JobId, JobDoneReason)
+
+type JobDoneListenerHandle = (JobId, ReplyChan (Maybe JobDoneReason))
+
 data SPCState = SPCState
   { spcPingCounter :: Int,
     nextJobId :: JobId,
     scpPendingJobs :: [JobHandle],
-    scpDoneJobs :: [JobDoneHandle]
+    scpDoneJobs :: [JobDoneHandle],
+    scpListeners :: [JobDoneListenerHandle]
   }
 
 newtype SPCM a = SPCM (SPCState -> IO (a, SPCState))
@@ -125,7 +130,8 @@ scpDefaultState =
     { spcPingCounter = 0,
       nextJobId = toEnum 0,
       scpPendingJobs = [],
-      scpDoneJobs = []
+      scpDoneJobs = [],
+      scpListeners = []
     }
 
 get :: SPCM SPCState
@@ -144,6 +150,20 @@ runSPCM s (SPCM m) = do
   (a, _) <- m s
   pure a
 
+completeJob :: JobId -> JobDoneReason -> SPCM ()
+completeJob jobId reason = do
+  state <- get
+  let pending' = removeAssoc jobId $ scpPendingJobs state
+  let done' = (jobId, reason) : scpDoneJobs state
+  let (matchingListeners, listeners') = partition ((== jobId) . fst) $ scpListeners state
+  forM_ matchingListeners $ \(_, chan) -> io $ reply chan $ Just reason
+  put $
+    state
+      { scpPendingJobs = pending',
+        scpDoneJobs = done',
+        scpListeners = listeners'
+      }
+
 pingSPC :: SPC -> IO Int
 pingSPC (SPC server) = requestReply server MsgPing
 
@@ -160,6 +180,11 @@ jobStatus (SPC server) jobId = requestReply server $ MsgJobStatus jobId
 -- | Asynchronously cancel a job.
 jobCancel :: SPC -> JobId -> IO ()
 jobCancel (SPC server) jobId = sendTo server $ MsgJobCancel jobId
+
+-- | Synchronously block until job is done and return the reason.
+-- Returns 'Nothing' if job is not known to this SPC instance.
+jobWait :: SPC -> JobId -> IO (Maybe JobDoneReason)
+jobWait (SPC server) jobid = requestReply server $ MsgJobWait jobid
 
 spcLoop :: Chan SPCMsg -> SPCM ()
 spcLoop chan = do
@@ -196,7 +221,13 @@ handleMsg (MsgJobCancel jobId) = do
   let pending = scpPendingJobs state
   case jobsListLookup jobId pending of
     Nothing -> pure ()
-    Just _ ->
-      let pending' = removeAssoc jobId pending
-          done' = (jobId, DoneCancelled) : scpDoneJobs state
-       in put $ state {scpPendingJobs = pending', scpDoneJobs = done'}
+    Just _ -> completeJob jobId DoneCancelled
+handleMsg (MsgJobWait jobId chan) = do
+  state <- get
+  let searchJob f = jobsListLookup jobId $ f state
+  case (searchJob scpDoneJobs, searchJob scpPendingJobs) of
+    (Just reason, _) -> io $ reply chan $ Just reason
+    (_, Just _) ->
+      let listeners' = (jobId, chan) : scpListeners state
+       in put $ state {scpListeners = listeners'}
+    _ -> io $ reply chan Nothing
