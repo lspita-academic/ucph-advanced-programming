@@ -3,6 +3,9 @@ module SPC
     SPC,
     startSPC,
     pingSPC,
+    Job (..),
+    JobId,
+    jobAdd,
   )
 where
 
@@ -14,6 +17,7 @@ import Control.Concurrent
   )
 import Control.Exception (SomeException, catch)
 import Control.Monad (ap, forM_, forever, liftM, void)
+import Data.Foldable (Foldable (fold))
 import Data.List (partition)
 import GenServer
 import System.Clock.Seconds (Clock (Monotonic), Seconds, getTime)
@@ -37,11 +41,31 @@ removeAssoc _ [] = []
 -- Then the definition of the glorious SPC.
 
 -- Messages sent to SPC.
-data SPCMsg = MsgPing (ReplyChan Int)
+data SPCMsg = MsgPing (ReplyChan Int) | MsgJobAdd Job (ReplyChan JobId)
 
--- | The central state. Must be protected from the bourgeoisie.
+type JobHandle = (JobId, Job)
+
+-- | A job that is to be enqueued in the glorious SPC.
+data Job = Job
+  { -- | The IO action that comprises the actual action of the job.
+    jobAction :: IO (),
+    -- | The maximum allowed runtime of the job, counting from when
+    -- the job begins executing (not when it is enqueued).
+    jobMaxSeconds :: Int
+  }
+
+-- | A unique identifier of a job that has been enqueued.
+newtype JobId = JobId Int
+  deriving (Eq, Ord, Show)
+
+instance Enum JobId where
+  toEnum = JobId
+  fromEnum (JobId i) = i
+
 data SPCState = SPCState
-  { spcPingCounter :: Int
+  { spcPingCounter :: Int,
+    nextJobId :: JobId,
+    scpPendingJobs :: [JobHandle]
   }
 
 newtype SPCM a = SPCM (SPCState -> IO (a, SPCState))
@@ -57,6 +81,12 @@ instance Monad SPCM where
   SPCM m1 >>= f = SPCM $ \s -> do
     (a, s') <- m1 s
     let SPCM m2 = f a in m2 s'
+
+-- | A Handle to the SPC instance.
+newtype SPC = SPC (Server SPCMsg)
+
+scpDefaultState :: SPCState
+scpDefaultState = SPCState {spcPingCounter = 0, nextJobId = toEnum 0, scpPendingJobs = []}
 
 get :: SPCM SPCState
 get = SPCM $ \s -> pure (s, s)
@@ -74,8 +104,12 @@ runSPCM s (SPCM m) = do
   (a, _) <- m s
   pure a
 
--- | A Handle to the SPC instance.
-newtype SPC = SPC (Server SPCMsg)
+pingSPC :: SPC -> IO Int
+pingSPC (SPC server) = requestReply server MsgPing
+
+-- | Add a job for scheduling.
+jobAdd :: SPC -> Job -> IO JobId
+jobAdd (SPC server) job = requestReply server $ MsgJobAdd job
 
 spcLoop :: Chan SPCMsg -> SPCM ()
 spcLoop chan = do
@@ -84,17 +118,18 @@ spcLoop chan = do
 
 startSPC :: IO SPC
 startSPC = do
-  let initialState = SPCState {spcPingCounter = 0}
-  server <- spawn $ \c -> runSPCM initialState $ forever $ spcLoop c
+  server <- spawn $ \c -> runSPCM scpDefaultState $ forever $ spcLoop c
   pure $ SPC server
 
 handleMsg :: SPCMsg -> SPCM ()
--- ping
 handleMsg (MsgPing chan) = do
-  s <- get
-  let pong = spcPingCounter s
-  put $ s {spcPingCounter = pong + 1}
+  state <- get
+  let pong = spcPingCounter state
+  put $ state {spcPingCounter = pong + 1}
   io $ reply chan pong
-
-pingSPC :: SPC -> IO Int
-pingSPC (SPC server) = requestReply server MsgPing
+handleMsg (MsgJobAdd job chan) = do
+  state <- get
+  let pendingJobs = scpPendingJobs state
+  let jobId = nextJobId state
+  put $ state {nextJobId = succ jobId, scpPendingJobs = (jobId, job) : pendingJobs}
+  io $ reply chan jobId
