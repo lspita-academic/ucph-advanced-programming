@@ -6,6 +6,9 @@ module SPC
     Job (..),
     JobId,
     jobAdd,
+    JobStatus (..),
+    JobDoneReason (..),
+    jobStatus,
   )
 where
 
@@ -19,6 +22,7 @@ import Control.Exception (SomeException, catch)
 import Control.Monad (ap, forM_, forever, liftM, void)
 import Data.Foldable (Foldable (fold))
 import Data.List (partition)
+import Data.Maybe (isJust)
 import GenServer
 import System.Clock.Seconds (Clock (Monotonic), Seconds, getTime)
 
@@ -41,7 +45,10 @@ removeAssoc _ [] = []
 -- Then the definition of the glorious SPC.
 
 -- Messages sent to SPC.
-data SPCMsg = MsgPing (ReplyChan Int) | MsgJobAdd Job (ReplyChan JobId)
+data SPCMsg
+  = MsgPing (ReplyChan Int)
+  | MsgJobAdd Job (ReplyChan JobId)
+  | MsgJobStatus JobId (ReplyChan (Maybe JobStatus))
 
 type JobHandle = (JobId, Job)
 
@@ -61,6 +68,28 @@ newtype JobId = JobId Int
 instance Enum JobId where
   toEnum = JobId
   fromEnum (JobId i) = i
+
+-- | How a job finished.
+data JobDoneReason
+  = -- | Normal termination.
+    Done
+  | -- | The job was killed because it ran for too long.
+    DoneTimeout
+  | -- | The job was explicitly cancelled.
+    DoneCancelled
+  | -- | The job crashed due to an exception.
+    DoneCrashed
+  deriving (Eq, Ord, Show)
+
+-- | The status of a job.
+data JobStatus
+  = -- | The job is done and this is why.
+    JobDone JobDoneReason
+  | -- | The job is still running.
+    JobRunning
+  | -- | The job is enqueued, but is waiting for an idle worker.
+    JobPending
+  deriving (Eq, Ord, Show)
 
 data SPCState = SPCState
   { spcPingCounter :: Int,
@@ -111,6 +140,9 @@ pingSPC (SPC server) = requestReply server MsgPing
 jobAdd :: SPC -> Job -> IO JobId
 jobAdd (SPC server) job = requestReply server $ MsgJobAdd job
 
+jobStatus :: SPC -> JobId -> IO (Maybe JobStatus)
+jobStatus (SPC server) jobId = requestReply server $ MsgJobStatus jobId
+
 spcLoop :: Chan SPCMsg -> SPCM ()
 spcLoop chan = do
   msg <- io $ receive chan
@@ -133,3 +165,10 @@ handleMsg (MsgJobAdd job chan) = do
   let jobId = nextJobId state
   put $ state {nextJobId = succ jobId, scpPendingJobs = (jobId, job) : pendingJobs}
   io $ reply chan jobId
+handleMsg (MsgJobStatus jobId chan) = do
+  state <- get
+  let status = if lookupTest $ scpPendingJobs state then Just JobPending else Nothing
+  io $ reply chan status
+  where
+    lookupTest :: [JobHandle] -> Bool
+    lookupTest jobs = isJust $ lookup jobId jobs
