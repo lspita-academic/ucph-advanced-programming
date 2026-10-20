@@ -9,6 +9,7 @@ module SPC
     JobStatus (..),
     JobDoneReason (..),
     jobStatus,
+    jobCancel,
   )
 where
 
@@ -49,8 +50,11 @@ data SPCMsg
   = MsgPing (ReplyChan Int)
   | MsgJobAdd Job (ReplyChan JobId)
   | MsgJobStatus JobId (ReplyChan (Maybe JobStatus))
+  | MsgJobCancel JobId
 
 type JobHandle = (JobId, Job)
+
+type JobDoneHandle = (JobId, JobDoneReason)
 
 -- | A job that is to be enqueued in the glorious SPC.
 data Job = Job
@@ -94,7 +98,8 @@ data JobStatus
 data SPCState = SPCState
   { spcPingCounter :: Int,
     nextJobId :: JobId,
-    scpPendingJobs :: [JobHandle]
+    scpPendingJobs :: [JobHandle],
+    scpDoneJobs :: [JobDoneHandle]
   }
 
 newtype SPCM a = SPCM (SPCState -> IO (a, SPCState))
@@ -115,7 +120,13 @@ instance Monad SPCM where
 newtype SPC = SPC (Server SPCMsg)
 
 scpDefaultState :: SPCState
-scpDefaultState = SPCState {spcPingCounter = 0, nextJobId = toEnum 0, scpPendingJobs = []}
+scpDefaultState =
+  SPCState
+    { spcPingCounter = 0,
+      nextJobId = toEnum 0,
+      scpPendingJobs = [],
+      scpDoneJobs = []
+    }
 
 get :: SPCM SPCState
 get = SPCM $ \s -> pure (s, s)
@@ -136,12 +147,19 @@ runSPCM s (SPCM m) = do
 pingSPC :: SPC -> IO Int
 pingSPC (SPC server) = requestReply server MsgPing
 
+jobsListLookup :: JobId -> [(JobId, b)] -> Maybe b
+jobsListLookup = lookup
+
 -- | Add a job for scheduling.
 jobAdd :: SPC -> Job -> IO JobId
 jobAdd (SPC server) job = requestReply server $ MsgJobAdd job
 
 jobStatus :: SPC -> JobId -> IO (Maybe JobStatus)
 jobStatus (SPC server) jobId = requestReply server $ MsgJobStatus jobId
+
+-- | Asynchronously cancel a job.
+jobCancel :: SPC -> JobId -> IO ()
+jobCancel (SPC server) jobId = sendTo server $ MsgJobCancel jobId
 
 spcLoop :: Chan SPCMsg -> SPCM ()
 spcLoop chan = do
@@ -167,8 +185,18 @@ handleMsg (MsgJobAdd job chan) = do
   io $ reply chan jobId
 handleMsg (MsgJobStatus jobId chan) = do
   state <- get
-  let status = if lookupTest $ scpPendingJobs state then Just JobPending else Nothing
+  let searchJob f = jobsListLookup jobId $ f state
+  let status = case (searchJob scpPendingJobs, searchJob scpDoneJobs) of
+        (Just _, _) -> Just JobPending
+        (_, Just reason) -> Just $ JobDone reason
+        _ -> Nothing
   io $ reply chan status
-  where
-    lookupTest :: [JobHandle] -> Bool
-    lookupTest jobs = isJust $ lookup jobId jobs
+handleMsg (MsgJobCancel jobId) = do
+  state <- get
+  let pending = scpPendingJobs state
+  case jobsListLookup jobId pending of
+    Nothing -> pure ()
+    Just _ ->
+      let pending' = removeAssoc jobId pending
+          done' = (jobId, DoneCancelled) : scpDoneJobs state
+       in put $ state {scpPendingJobs = pending', scpDoneJobs = done'}

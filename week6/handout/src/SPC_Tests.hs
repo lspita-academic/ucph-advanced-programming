@@ -35,5 +35,18 @@ tests =
           spc <- startSPC
           jobId <- jobAdd spc emptyJob
           let missingJobId = succ jobId
+          jobStatus spc missingJobId >>= (@?= Nothing),
+        testCase "pending job should be cancelled" $ do
+          spc <- startSPC
+          jobId <- jobAdd spc emptyJob
+          jobStatus spc jobId >>= (@?= Just JobPending)
+          jobCancel spc jobId
+          jobStatus spc jobId >>= (@?= Just (JobDone DoneCancelled)),
+        testCase "cancelling non-pending job does not fail" $ do
+          spc <- startSPC
+          jobId <- jobAdd spc emptyJob
+          let missingJobId = succ jobId
+          jobStatus spc missingJobId >>= (@?= Nothing)
+          jobCancel spc missingJobId
           jobStatus spc missingJobId >>= (@?= Nothing)
       ]
