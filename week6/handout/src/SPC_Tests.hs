@@ -11,4 +11,5 @@ tests =
   localOption (mkTimeout 3000000) $
     testGroup
       "SPC"
-      []
+      [ testCase "ping should pong" $ startSPC >>= pingSPC >>= (@?= 0)
+      ]
