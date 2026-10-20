@@ -49,7 +49,7 @@ spcLoop chan = do
 
 startSPC :: IO SPC
 startSPC = do
-  server <- spawn spcLoop
+  server <- spawn $ \c -> forever $ spcLoop c
   pure $ SPC server
 
 handleMsg :: SPCMsg -> IO ()
