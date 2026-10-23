@@ -11,6 +11,7 @@ module SPC
     jobStatus,
     jobCancel,
     jobWait,
+    secondsToMicro,
   )
 where
 
@@ -35,6 +36,9 @@ import System.Clock.Seconds (Clock (Monotonic), Seconds, getTime)
 -- elapsed time.
 getSeconds :: IO Seconds
 getSeconds = getTime Monotonic
+
+secondsToMicro :: Int -> Int
+secondsToMicro s = s * 1000000
 
 -- | Remove mapping from association list.
 removeAssoc :: (Eq k) => k -> [(k, v)] -> [(k, v)]

@@ -14,7 +14,7 @@ emptyLoopJob s = Job {jobAction = forever $ pure (), jobMaxSeconds = s}
 
 tests :: TestTree
 tests =
-  localOption (mkTimeout 3000000) $
+  localOption (mkTimeout 10000000) $
     testGroup
       "SPC"
       [ testCase "ping should pong" $ startSPC >>= pingSPC >>= (@?= 0),
@@ -51,5 +51,15 @@ tests =
           let missingJobId = succ jobId
           jobStatus spc missingJobId >>= (@?= Nothing)
           jobCancel spc missingJobId
-          jobStatus spc missingJobId >>= (@?= Nothing)
+          jobStatus spc missingJobId >>= (@?= Nothing),
+        testCase "should wait and get DoneCancelled result" $ do
+          spc <- startSPC
+          jobId <- jobAdd spc $ emptyLoopJob 1000000000
+          _ <-
+            jobAdd spc $
+              Job
+                { jobMaxSeconds = 10,
+                  jobAction = threadDelay (secondsToMicro 2) >> jobCancel spc jobId
+                }
+          jobWait spc jobId >>= (@?= Just DoneCancelled)
       ]
